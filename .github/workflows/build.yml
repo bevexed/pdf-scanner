@@ -1,0 +1,15 @@
+name: build-windows-exe
+# ⚠️ 安全:此 CI 仅编译不含任何真实账单 PDF 的源码仓库。
+# var/、data/pdfs/、样本 PDF 必须在 .gitignore 中,绝不推送到远程。
+on: [workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install -r requirements.txt
+      - run: pyinstaller --onefile --name billing_exporter --add-data "web;web" --hidden-import fitz app.py
+      - uses: actions/upload-artifact@v4
+        with: { name: exe, path: dist/*.exe }
