@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<title>账单截图导出系统</title>
+<link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<h1>账单截图导出系统</h1>
+<section id="import"><h2>1. 导入 PDF</h2>
+  <input type="file" id="pdf" accept="application/pdf">
+  <button onclick="doImport()">导入</button>
+  <div id="progress">已入库 <b id="total">{{ total }}</b> 票</div>
+</section>
+<section id="query"><h2>2. 查询单号</h2>
+  <label><input type="radio" name="mode" value="fee" checked> 杂费</label>
+  <label><input type="radio" name="mode" value="duty"> 关税</label>
+  <textarea id="awbs" rows="8" placeholder="每行一个运单号"></textarea>
+  <button onclick="doQuery()">查询</button>
+</section>
+<section id="results"><h2>3. 结果</h2>
+  <button onclick="exportZip()">批量导出 ZIP</button>
+  <table id="table"><thead><tr>
+    <th>单号</th><th>来源账单</th><th>页码</th><th>状态</th><th>操作</th>
+  </tr></thead><tbody></tbody></table>
+</section>
+<script src="/static/app.js"></script>
+</body></html>
