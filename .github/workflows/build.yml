@@ -11,5 +11,9 @@ jobs:
         with: { python-version: '3.11' }
       - run: pip install -r requirements.txt
       - run: pyinstaller --noconfirm --onefile --noconsole --name billing_exporter --add-data "web;web" --hidden-import fitz --hidden-import pystray._win32 desktop.py
+      # 随包附带官方 WebView2 Evergreen 引导安装器,供极少数缺 Runtime 的老机器双击安装
+      - name: 下载 WebView2 安装器
+        shell: pwsh
+        run: Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile 'dist/WebView2 安装器.exe'
       - uses: actions/upload-artifact@v5
-        with: { name: exe, path: dist/*.exe }
+        with: { name: exe, path: dist/* }
