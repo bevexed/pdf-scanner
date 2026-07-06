@@ -1,7 +1,7 @@
 # 桌面外壳改造设计(原生窗口 + 系统托盘)
 
 日期:2026-07-06
-状态:待确认
+状态:已定稿
 
 ## 背景与目标
 
@@ -117,11 +117,12 @@ def on_closing():
         return True                    # 放行,真正关闭
     if is_busy():
         ok = window.create_confirmation_dialog("正在导入", "正在导入,确定隐藏到托盘?")
-        # 无论确认与否都不中断导入;仅隐藏
-    window.hide()
+        if not ok:
+            return False               # 取消:不隐藏,窗口保持可见
+    window.hide()                      # 确认(或非导入中)才隐藏
     return False                       # 取消默认关闭 → 隐藏到托盘
 ```
-返回 `False` 取消 pywebview 默认关闭并调 `window.hide()`;返回 `True` 才真正销毁窗口。
+返回 `False` 取消 pywebview 默认关闭。导入中弹确认框:确认才 `window.hide()`,取消则窗口保持可见、不隐藏。非导入中直接隐藏。返回 `True`(仅 `_quitting` 时)才真正销毁窗口。
 
 **托盘"显示"**:`window.show()` 恢复窗口。
 
@@ -130,13 +131,16 @@ def on_closing():
 def on_quit():
     global _quitting
     if is_busy():
-        # 托盘无窗口上下文,用 pystray notify 或简单确认;确认才继续
-        ...
+        window.show()                  # 先唤回窗口,提供确认上下文
+        ok = window.create_confirmation_dialog("正在导入", "正在导入,确定退出?中断后需重新导入")
+        if not ok:
+            return                      # 取消:不退出
     _quitting = True
     tray_icon.stop()                   # 停托盘线程
     flask_server.shutdown()            # 优雅停 Flask
     window.destroy()                   # 触发 closing→_quitting=True→放行→webview.start() 返回
 ```
+托盘退出的确认必须用 `window.create_confirmation_dialog`(真确认),不能用 pystray notify(仅通知、无返回值)。导入中先 `window.show()` 唤回窗口再弹确认。
 
 状态迁移:
 ```
