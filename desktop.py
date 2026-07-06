@@ -1,5 +1,7 @@
 # desktop.py
 import time, threading, urllib.request, urllib.error
+import sys, queue
+import app as appmod
 from werkzeug.serving import make_server
 
 
@@ -42,3 +44,142 @@ def wait_until_ready(port, timeout=10.0):
         except (urllib.error.URLError, ConnectionError, OSError):
             time.sleep(0.1)
     return False
+
+
+_quitting = False
+_window = None
+_server = None
+_tray = None
+_ui_queue = queue.Queue()   # 托盘线程 → UI 调度线程 的动作队列
+
+
+def post_ui(action, *args):
+    """托盘/其他线程投递 UI 动作,由 ui_loop 调度线程执行。"""
+    _ui_queue.put((action, args))
+
+
+# ---- 以下 request_* 只在 ui_loop 调度线程 / pywebview closing 回调 中调用 ----
+
+def request_show():
+    _window.show()
+
+
+def request_quit():
+    """真正的退出流程(UI 调度线程执行):导入中先唤回窗口+确认。"""
+    global _quitting
+    if appmod.is_busy():
+        _window.show()
+        ok = _window.create_confirmation_dialog("正在导入", "正在导入,确定退出?中断后需重新导入")
+        if not ok:
+            return
+    _quitting = True
+    if _tray is not None:
+        _tray.stop()
+    if _server is not None:
+        _server.shutdown()
+    _window.destroy()
+
+
+def ui_loop():
+    """唯一的 UI 调度线程(pywebview 经 webview.start(ui_loop) 放到独立线程运行,
+    非主线程):从队列取动作,串行调用 Window API。托盘线程只投递,不碰窗口。"""
+    while not _quitting:
+        try:
+            action, args = _ui_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if action == "show":
+            request_show()
+        elif action == "quit":
+            request_quit()
+
+
+def on_closing():
+    """窗口 ✕(pywebview 在主线程触发):导入中确认才隐藏;否则隐藏到托盘。"""
+    global _quitting
+    if _quitting:
+        return True
+    if appmod.is_busy():
+        ok = _window.create_confirmation_dialog("正在导入", "正在导入,确定隐藏到托盘?")
+        if not ok:
+            return False           # 取消:窗口保持可见
+    _window.hide()
+    return False                   # 取消默认关闭 → 隐藏
+
+
+# ---- 托盘回调:运行在 pystray 线程,只投递,不碰窗口 ----
+
+def on_tray_show(icon=None, item=None):
+    post_ui("show")
+
+
+def on_tray_quit(icon=None, item=None):
+    post_ui("quit")
+
+
+def _make_tray_image():
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (64, 64), (30, 30, 30))
+    d = ImageDraw.Draw(img)
+    d.rectangle([12, 12, 52, 52], outline=(230, 230, 230), width=3)
+    return img
+
+
+def _run_tray():
+    global _tray
+    import pystray
+    menu = pystray.Menu(
+        pystray.MenuItem("显示", on_tray_show, default=True),
+        pystray.MenuItem("退出", on_tray_quit),
+    )
+    _tray = pystray.Icon("账单截图导出系统", _make_tray_image(), "账单截图导出系统", menu)
+    _tray.run()
+
+
+def _error_exit(msg):
+    """无正常窗口时也让用户看到错误(而非静默白屏/退出)。"""
+    sys.stderr.write(msg + "\n")
+    try:
+        import webview as _wv
+        _wv.create_window("启动失败", html=f"<h3 style='font-family:sans-serif'>{msg}</h3>")
+        _wv.start()
+    except Exception:
+        pass
+
+
+# 临时桩:Task 4b 会替换为平台判断。必须在 main() 之前定义。
+def _use_tray():
+    return True
+
+
+def main():
+    global _window, _server
+    import webview
+    appmod._ensure_dirs()
+    _server = FlaskServer(appmod.app)
+    _server.start()
+    if not wait_until_ready(_server.port):
+        _server.shutdown()
+        _error_exit("服务启动超时,请重试")
+        return
+    try:
+        _window = webview.create_window(
+            "账单截图导出系统", f"http://127.0.0.1:{_server.port}",
+            width=1200, height=800,
+        )
+        _window.events.closing += on_closing
+        if _use_tray():
+            threading.Thread(target=_run_tray, daemon=True).start()
+        # 主线程跑 GUI 事件循环并阻塞至 destroy;ui_loop 被放到独立线程运行
+        webview.start(ui_loop)
+    except Exception as e:          # 常见:Win 缺 WebView2 / GUI 初始化失败
+        _error_exit(f"窗口创建失败,可能缺少 WebView2 Runtime,请运行随包安装器。\n{e}")
+    finally:
+        if _tray is not None:
+            _tray.stop()
+        if _server is not None:
+            _server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
