@@ -99,6 +99,17 @@ def on_closing():
     global _quitting
     if _quitting:
         return True
+    if not _use_tray():
+        # 无托盘(macOS 首版):✕ = 退出,导入中确认
+        if appmod.is_busy():
+            ok = _window.create_confirmation_dialog("正在导入", "正在导入,确定退出?中断后需重新导入")
+            if not ok:
+                return False
+        _quitting = True
+        if _server is not None:
+            _server.shutdown()
+        return True                # 放行关闭 → webview.start 返回
+    # 有托盘:✕ = 隐藏
     if appmod.is_busy():
         ok = _window.create_confirmation_dialog("正在导入", "正在导入,确定隐藏到托盘?")
         if not ok:
@@ -147,9 +158,9 @@ def _error_exit(msg):
         pass
 
 
-# 临时桩:Task 4b 会替换为平台判断。必须在 main() 之前定义。
 def _use_tray():
-    return True
+    # macOS 首版禁用托盘,规避 AppKit/Cocoa 主循环冲突;Win/Linux 启用
+    return sys.platform != "darwin"
 
 
 def main():
