@@ -68,10 +68,15 @@ def request_quit():
     """真正的退出流程(UI 调度线程执行):导入中先唤回窗口+确认。"""
     global _quitting
     if appmod.is_busy():
-        _window.show()
+        was_hidden = getattr(_window, "hidden", False)
+        _window.show()   # 为确认框唤回窗口(托盘退出时窗口通常处于隐藏态)
         ok = _window.create_confirmation_dialog("正在导入", "正在导入,确定退出?中断后需重新导入")
         if not ok:
+            if was_hidden:
+                _window.hide()   # 取消 = 维持原样:退回隐藏
             return
+    # 注意:以下必须同步跑完(尤其 destroy())再返回 ui_loop 的 while 判断。
+    # _quitting 置位后本函数仍在 ui_loop 栈内,destroy 一定执行;勿改为异步或挪出。
     _quitting = True
     if _tray is not None:
         _tray.stop()
@@ -138,13 +143,18 @@ def _make_tray_image():
 
 def _run_tray():
     global _tray
-    import pystray
-    menu = pystray.Menu(
-        pystray.MenuItem("显示", on_tray_show, default=True),
-        pystray.MenuItem("退出", on_tray_quit),
-    )
-    _tray = pystray.Icon("账单截图导出系统", _make_tray_image(), "账单截图导出系统", menu)
-    _tray.run()
+    try:
+        import pystray
+        menu = pystray.Menu(
+            pystray.MenuItem("显示", on_tray_show, default=True),
+            pystray.MenuItem("退出", on_tray_quit),
+        )
+        _tray = pystray.Icon("账单截图导出系统", _make_tray_image(), "账单截图导出系统", menu)
+        _tray.run()
+    except Exception as e:
+        # 托盘线程是 daemon,异常会静默终止托盘 → 窗口 ✕ 隐藏后无从唤回。
+        # 记录到 stderr,便于打包漏依赖(如 pystray 后端/PIL)时排查。
+        sys.stderr.write(f"托盘启动失败,已禁用托盘功能:{e}\n")
 
 
 def _error_exit(msg):
