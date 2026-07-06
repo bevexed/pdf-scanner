@@ -6,10 +6,10 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.11' }
       - run: pip install -r requirements.txt
       - run: pyinstaller --onefile --name billing_exporter --add-data "web;web" --hidden-import fitz app.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with: { name: exe, path: dist/*.exe }
