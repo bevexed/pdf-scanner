@@ -1,5 +1,19 @@
 let lastFiles = [];
 
+const isDesktop = () => !!window.__DESKTOP__ && window.pywebview && window.pywebview.api;
+
+// 桌面版:应用内预览子窗口(不跳系统浏览器)
+async function previewFile(name) {
+  const r = await window.pywebview.api.preview(name);
+  if (r && r.ok === false && r.error) alert('预览失败: ' + r.error);
+}
+
+// 桌面版:单张另存(原生保存对话框)
+async function saveFile(name) {
+  const r = await window.pywebview.api.save_one(name);
+  if (r && r.ok === false && !r.cancelled) alert('导出失败: ' + (r.error || '未知错误'));
+}
+
 async function doImport() {
   const f = document.getElementById('pdf').files[0];
   if (!f) return alert('请选择 PDF');
@@ -29,8 +43,14 @@ async function doQuery() {
     let op = '';
     if (r.image) {
       const fname = r.image.split('/').pop();
-      op = `<a href="${r.image}" target="_blank">预览</a>
-            <a href="${r.image}" download="${fname}">导出</a>`;
+      if (isDesktop()) {
+        const fn = fname.replace(/'/g, "\\'");
+        op = `<a href="#" onclick="previewFile('${fn}');return false">预览</a>
+              <a href="#" onclick="saveFile('${fn}');return false">导出</a>`;
+      } else {
+        op = `<a href="${r.image}" target="_blank">预览</a>
+              <a href="${r.image}" download="${fname}">导出</a>`;
+      }
       lastFiles.push(fname);
     } else if (r.status === '打码不完整') {
       op = '<span class="warn">需人工处理</span>';
@@ -44,6 +64,11 @@ async function doQuery() {
 
 async function exportZip() {
   if (!lastFiles.length) return alert('无可导出结果');
+  if (isDesktop()) {
+    const r = await window.pywebview.api.save_zip(lastFiles);
+    if (r && r.ok === false && !r.cancelled) alert('导出失败: ' + (r.error || '未知错误'));
+    return;
+  }
   const resp = await fetch('/export_zip', {method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify({files: lastFiles})});
   const blob = await resp.blob();

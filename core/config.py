@@ -22,7 +22,8 @@ ROW_Y_TOL = 3.0                 # 同行 y 容差
 TICKET_TOP_PAD = 8
 TICKET_BOTTOM_PAD = 4
 RENDER_ZOOM = 3
-MASK_MODE = "solid"            # "solid" 实心黑遮盖(默认,隐私优先) / "blur" 高斯模糊
+MASK_MODE = "solid"            # "solid" 实心遮盖(默认,隐私优先) / "blur" 高斯模糊
+MASK_COLOR = (255, 255, 255)   # solid 遮盖填充色(RGB),默认与账单白底同色;隐私优先可改 (0, 0, 0)
 BLUR_RADIUS = 12
 
 # 明细页标记

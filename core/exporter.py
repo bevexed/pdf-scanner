@@ -28,8 +28,8 @@ def export_masked(pdf_path, page_no, rect, mask_rects, out_path, required=None):
             continue
         if config.MASK_MODE == "blur":
             img.paste(img.crop(box).filter(ImageFilter.GaussianBlur(config.BLUR_RADIUS)), box)
-        else:  # solid 默认:实心黑遮盖
-            draw.rectangle(box, fill=(0, 0, 0))
+        else:  # solid 默认:实心遮盖,颜色可配(默认与账单底色同色)
+            draw.rectangle(box, fill=tuple(config.MASK_COLOR))
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     img.save(out_path)
     doc.close()

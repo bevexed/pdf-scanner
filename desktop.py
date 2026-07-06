@@ -1,7 +1,9 @@
 # desktop.py
-import time, threading, urllib.request, urllib.error
+import os, time, threading, urllib.request, urllib.error
+import shutil, zipfile
 import sys, queue
 import app as appmod
+from core import config
 from werkzeug.serving import make_server
 
 
@@ -189,6 +191,74 @@ def _install_dock_reopen():
         sys.stderr.write(f"Dock 唤回未启用(不影响使用,可用 Cmd+Q/Dock 右键退出):{e}\n")
 
 
+def _safe_export_path(name):
+    """把前端给的文件名限制在 EXPORT_DIR 内,防目录穿越;返回真实路径或 None。"""
+    name = os.path.basename(name or "")
+    if not name:
+        return None
+    p = os.path.join(config.EXPORT_DIR, name)
+    return p if os.path.isfile(p) else None
+
+
+class Api:
+    """暴露给 webview 前端的原生能力:桌面版下载/预览不依赖浏览器 <a> 行为。
+    WKWebView(macOS)不支持 <a download>,且 target=_blank 会跳系统浏览器。"""
+
+    def preview(self, name):
+        """应用内新开子窗口显示导出的 PNG,不走系统浏览器。"""
+        import webview, base64
+        p = _safe_export_path(name)
+        if not p:
+            return {"ok": False, "error": "文件不存在"}
+        # 读成 base64 data URI 内嵌:WKWebView 对内联 html 里的 file:// 有安全限制,
+        # data URI 不依赖本地文件访问,渲染最稳。
+        with open(p, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode("ascii")
+        html = (f"<body style='margin:0;background:#222;display:flex;"
+                f"align-items:center;justify-content:center;height:100vh'>"
+                f"<img src='data:image/png;base64,{b64}' "
+                f"style='max-width:100%;max-height:100%'></body>")
+        webview.create_window(f"预览 - {name}", html=html, width=900, height=1100)
+        return {"ok": True}
+
+    def save_one(self, name):
+        """弹原生保存对话框,把单张 PNG 另存到用户选定位置。"""
+        p = _safe_export_path(name)
+        if not p:
+            return {"ok": False, "error": "文件不存在"}
+        dest = _window.create_file_dialog(
+            appmod_dialog_save(), directory="", save_filename=name)
+        if not dest:
+            return {"ok": False, "cancelled": True}
+        dest = dest if isinstance(dest, str) else dest[0]
+        shutil.copyfile(p, dest)
+        return {"ok": True, "path": dest}
+
+    def save_zip(self, names):
+        """把多张 PNG 打包成 zip,弹原生保存对话框写到用户选定位置。"""
+        paths = [(_safe_export_path(n), os.path.basename(n)) for n in (names or [])]
+        paths = [(p, n) for p, n in paths if p]
+        if not paths:
+            return {"ok": False, "error": "无可导出结果"}
+        dest = _window.create_file_dialog(
+            appmod_dialog_save(), directory="", save_filename="exports.zip")
+        if not dest:
+            return {"ok": False, "cancelled": True}
+        dest = dest if isinstance(dest, str) else dest[0]
+        with zipfile.ZipFile(dest, "w") as z:
+            for p, n in paths:
+                z.write(p, n)
+        return {"ok": True, "path": dest, "count": len(paths)}
+
+
+def appmod_dialog_save():
+    """保存对话框类型常量(延迟导入,避免模块级 import webview)。
+    新版用 FileDialog.SAVE,老版回退 SAVE_DIALOG。"""
+    import webview
+    fd = getattr(webview, "FileDialog", None)
+    return fd.SAVE if fd is not None else webview.SAVE_DIALOG
+
+
 def main():
     global _window, _server
     import webview
@@ -202,9 +272,12 @@ def main():
     try:
         _window = webview.create_window(
             "账单截图导出系统", f"http://127.0.0.1:{_server.port}",
-            width=1200, height=800,
+            width=1200, height=800, js_api=Api(),
         )
         _window.events.closing += on_closing
+        # 注入标记:前端据此走原生下载/预览(pywebview.api),而非浏览器 <a> 行为
+        _window.events.loaded += lambda: _window.evaluate_js(
+            "window.__DESKTOP__ = true")
         if _use_tray():
             threading.Thread(target=_run_tray, daemon=True).start()
         elif sys.platform == "darwin":
