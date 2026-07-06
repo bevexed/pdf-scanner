@@ -7,7 +7,7 @@
 
 当前交付形态是 PyInstaller 打包的 Flask 应用:双击 exe 会弹出黑色终端窗口,1 秒后跳转系统浏览器打开 `127.0.0.1:5000`。这不像成品桌面软件——有黑窗、依赖外部浏览器、关掉终端即断服务,客户观感"业余"。
 
-目标:改造成 **原生桌面窗口 + 系统托盘图标** 的成品软件,跨 Windows / macOS。**不改任何现有 Flask 路由和业务逻辑**,只在外面套一层桌面外壳。
+目标:改造成原生桌面窗口的成品软件——**Windows 原生窗口 + 系统托盘;macOS 原生窗口(首版无菜单栏图标)**。**不改任何现有 Flask 路由和业务逻辑**,只在外面套一层桌面外壳。
 
 ## 实现边界(硬约束)
 
@@ -220,8 +220,10 @@ pystray
 
 ## 测试
 
-- 单元:`is_busy()` 在各 `_progress["state"]` 下返回正确布尔;`FlaskServer` 能拿到有效端口并 `serve_forever`/`shutdown` 正常。
-- 手动:Mac 本机跑 `python desktop.py` 验证窗口、托盘、✕ 隐藏、托盘显示/退出、导入中确认;Windows 打包 exe 后同样走一遍,并验证缺 WebView2 时的错误对话框。
+- 单元:`is_busy()` 在各 `_progress["state"]` 下返回正确布尔;`FlaskServer` 能拿到有效端口、`serve_forever`/`shutdown` 正常、未 start 安全 close、shutdown 幂等。
+- 手动:
+  - macOS(`python desktop.py`,首版无托盘):验证原生窗口、✕ 退出、导入中退出确认。
+  - Windows(打包 exe 后):验证托盘、✕ 隐藏、托盘显示/退出、导入中确认、缺 WebView2 时的错误对话框。
 - 回归:现有 pytest 全绿(业务未动,应无影响)。
 
 ## 非目标(YAGNI)
