@@ -7,14 +7,13 @@ from core.classifier import has_extra_fee, has_duty
 _AMOUNT_LABELS = [("运费", "freight"), ("折扣", "discount"),
                   ("燃油附加费", "fuel"), ("合计", "total")]
 
-def _is_detail_page(page):
-    t = page.get_text("text")
-    return any(m in t for m in config.DETAIL_MARKERS)
+def _is_detail_page(text):
+    return any(m in text for m in config.DETAIL_MARKERS)
 
-def _page_invoice_no(page):
+def _page_invoice_no(words):
     """该页页眉的 invoice number:y<160、x>400 的 9 位数字(区分同一 PDF 内多张 invoice)。
     注意:XXXXX0612 是客户账号(每页固定),不是 invoice 号,不能用。"""
-    cands = [w for w in page.get_text("words")
+    cands = [w for w in words
              if w[1] < 160 and w[0] > 400 and re.match(r"^\d{9}$", w[4])]
     return cands[0][4] if cands else ""
 
@@ -37,8 +36,7 @@ def _sender_rect(words, y_lo, y_hi):
     return [min(w[0] for w in sel), min(w[1] for w in sel),
             max(w[2] for w in sel), max(w[3] for w in sel)]
 
-def _parse_detail_page(page, page_no, invoice_no):
-    words = page.get_text("words")
+def _parse_detail_page(page, words, page_no, invoice_no):
     anchors = []
     for w in words:
         if w[4] == "AWB":
@@ -76,18 +74,77 @@ def _parse_detail_page(page, page_no, invoice_no):
         })
     return out
 
+def _parse_page(page, pno):
+    """解析单页:每页只抽一次 words/text 复用,非明细页返回空列表。"""
+    text = page.get_text("text")
+    if not _is_detail_page(text):
+        return []
+    words = page.get_text("words")
+    return _parse_detail_page(page, words, pno, _page_invoice_no(words))
+
 def parse_pdf(pdf_path, page_range=None, progress_cb=None):
     """解析明细页所有票。page_range=(start,end) 半开(0基),progress_cb(done,total)。
     invoice_no 按每页页眉解析(一份 PDF 可含多张 invoice)。"""
     doc = fitz.open(pdf_path)
-    lo = 0 if page_range is None else page_range[0]
-    hi = len(doc) if page_range is None else min(page_range[1], len(doc))
+    try:
+        lo = 0 if page_range is None else page_range[0]
+        hi = len(doc) if page_range is None else min(page_range[1], len(doc))
+        out = []
+        for pno in range(lo, hi):
+            out.extend(_parse_page(doc[pno], pno))
+            if progress_cb:
+                progress_cb(pno - lo + 1, hi - lo)
+        return out
+    finally:
+        doc.close()
+
+def _parse_segment(args):
+    """解析 [lo,hi) 页段,返回票列表。供多进程 map 调用,故为模块级、参数可 pickle。"""
+    pdf_path, lo, hi = args
+    doc = fitz.open(pdf_path)
+    try:
+        out = []
+        for pno in range(lo, hi):
+            out.extend(_parse_page(doc[pno], pno))
+        return out
+    finally:
+        doc.close()
+
+def _default_workers():
+    """自适应用核:始终留 2 个核给系统/UI,其余用于解析,至少 1。
+    随机器核数伸缩,不写死上限:2核→1、4核→2、8核→6、16核→14。"""
+    import os
+    return max(1, (os.cpu_count() or 2) - 2)
+
+def parse_pdf_parallel(pdf_path, workers=None, seg_pages=200, progress_cb=None):
+    """多进程并行解析:按 seg_pages 切段分给进程池。页间独立,绕过 GIL。
+    workers=None 时用 _default_workers()(核数一半、封顶4),避免拉爆 CPU。
+    progress_cb(done_segs,total_segs) 按段回调。"""
+    from concurrent.futures import ProcessPoolExecutor
+    doc = fitz.open(pdf_path); total = len(doc); doc.close()
+    segs = [(pdf_path, lo, min(lo + seg_pages, total))
+            for lo in range(0, total, seg_pages)]
+    workers = workers or _default_workers()
     out = []
-    for pno in range(lo, hi):
-        page = doc[pno]
-        if _is_detail_page(page):
-            out.extend(_parse_detail_page(page, pno, _page_invoice_no(page)))
-        if progress_cb:
-            progress_cb(pno - lo + 1, hi - lo)
-    doc.close()
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        for done, res in enumerate(ex.map(_parse_segment, segs), 1):
+            out.extend(res)
+            if progress_cb:
+                progress_cb(done, len(segs))
     return out
+
+def parse_pdf_stream(pdf_path, batch_pages=200):
+    """流式解析:doc 只打开一次,每积满 batch_pages 页 yield 一次
+    (done_pages, tickets_batch),供调用方边解析边入库。最后一批含剩余页。"""
+    doc = fitz.open(pdf_path)
+    try:
+        total = len(doc)
+        batch = []
+        for pno in range(total):
+            batch.extend(_parse_page(doc[pno], pno))
+            if (pno + 1) % batch_pages == 0:
+                yield pno + 1, batch
+                batch = []
+        yield total, batch
+    finally:
+        doc.close()

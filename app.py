@@ -3,7 +3,7 @@ import os, threading, zipfile, io
 from flask import (Flask, request, jsonify, render_template,
                    send_from_directory, send_file)
 from core import config, indexer, exporter
-from core.pdf_parser import parse_pdf
+from core.pdf_parser import parse_pdf, parse_pdf_parallel
 import fitz
 
 app = Flask(__name__, template_folder=os.path.join(config.WEB_DIR, "templates"),
@@ -47,13 +47,16 @@ def _do_import(save_path, pdf_hash):
             return
         _progress = {"state": "parsing", "done": 0, "total": total, "tickets": 0, "message": ""}
         bid = indexer.begin_batch(config.DB_PATH, pdf_hash, os.path.basename(save_path), total)
-        STEP = 200; count = 0
+        count = 0
         try:
-            for lo in range(0, total, STEP):
-                tickets = parse_pdf(save_path, (lo, min(lo + STEP, total)))
-                indexer.insert_tickets(config.DB_PATH, bid, tickets)
-                count += len(tickets)
-                _progress["done"] = min(lo + STEP, total)
+            # 多进程并行解析(页间独立、绕过 GIL);按段回调更新进度(done 以页计)
+            SEG = 200
+            def _seg_done(done_segs, total_segs):
+                _progress["done"] = min(done_segs * SEG, total)
+            tickets = parse_pdf_parallel(save_path, seg_pages=SEG, progress_cb=_seg_done)
+            indexer.insert_tickets(config.DB_PATH, bid, tickets)
+            count = len(tickets)
+            _progress["done"] = total
             indexer.commit_batch(config.DB_PATH, bid, count)   # 整批成功才可见
         except Exception:
             indexer.fail_batch(config.DB_PATH, bid)            # 清理半成品记录

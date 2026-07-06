@@ -295,4 +295,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # 打包后(PyInstaller 冻结)多进程解析必需:否则子进程会递归重启整个 app
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()
