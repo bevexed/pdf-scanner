@@ -1,5 +1,6 @@
 # tests/test_app.py
 import os, tempfile
+import pytest
 import core.config as _cfg
 _cfg.DATA_DIR = tempfile.mkdtemp()
 _cfg.DB_PATH = os.path.join(_cfg.DATA_DIR, "t.db")
@@ -8,6 +9,12 @@ _cfg.EXPORT_DIR = os.path.join(_cfg.DATA_DIR, "exports")
 os.makedirs(_cfg.PDF_DIR, exist_ok=True); os.makedirs(_cfg.EXPORT_DIR, exist_ok=True)
 import app as appmod
 appmod._ensure_dirs()
+
+@pytest.fixture
+def restore_progress():
+    saved = dict(appmod._progress)
+    yield
+    appmod._progress = saved
 
 def client():
     appmod.app.config["TESTING"] = True
@@ -67,3 +74,15 @@ def test_query_missing_source_pdf(monkeypatch):
     r = client().post("/query", json={"awbs": ["889635416339"], "mode": "fee"})
     d = r.get_json()[0]
     assert d["status"] == "源PDF缺失"  # 不是 500
+
+def test_is_busy_true_when_parsing(restore_progress):
+    appmod._progress = {"state": "parsing", "done": 0, "total": 10, "tickets": 0, "message": ""}
+    assert appmod.is_busy() is True
+
+def test_is_busy_false_when_idle(restore_progress):
+    appmod._progress = {"state": "idle", "done": 0, "total": 0, "tickets": 0, "message": ""}
+    assert appmod.is_busy() is False
+
+def test_is_busy_false_when_done(restore_progress):
+    appmod._progress = {"state": "done", "done": 10, "total": 10, "tickets": 5, "message": ""}
+    assert appmod.is_busy() is False

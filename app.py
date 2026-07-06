@@ -1,5 +1,5 @@
 # app.py
-import os, threading, webbrowser, zipfile, io
+import os, threading, zipfile, io
 from flask import (Flask, request, jsonify, render_template,
                    send_from_directory, send_file)
 from core import config, indexer, exporter
@@ -11,6 +11,10 @@ app = Flask(__name__, template_folder=os.path.join(config.WEB_DIR, "templates"),
 
 _progress = {"state": "idle", "done": 0, "total": 0, "tickets": 0, "message": ""}
 _REQUIRED_MASK = {"sender", "freight", "discount", "fuel", "total"}
+
+def is_busy():
+    """导入进行中(供桌面外壳判断是否可安全退出)。"""
+    return _progress["state"] == "parsing"
 
 def _ensure_dirs():
     for d in (config.DATA_DIR, config.PDF_DIR, config.EXPORT_DIR):
@@ -125,10 +129,6 @@ def export_zip():
     return send_file(buf, mimetype="application/zip",
                      as_attachment=True, download_name="exports.zip")
 
-def open_browser():
-    webbrowser.open("http://127.0.0.1:5000")
-
 if __name__ == "__main__":
     _ensure_dirs()
-    threading.Timer(1.0, open_browser).start()
     app.run(host="127.0.0.1", port=5000)
