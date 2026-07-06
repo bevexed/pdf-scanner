@@ -4,7 +4,7 @@
 
 **Goal:** 把 Flask+浏览器交付形态改造成原生桌面窗口 + 系统托盘的成品软件,跨 Windows/macOS,不改现有 Flask 路由与业务。
 
-**Architecture:** 外壳与内核分离。新增 `desktop.py` 作打包唯一入口:用 `werkzeug.serving.make_server` 在后台 daemon 线程跑 Flask(自动分配端口、支持优雅 shutdown),pywebview 在主线程开原生窗口连该端口,pystray 在独立 daemon 线程提供托盘。**托盘回调线程不直接操作窗口**:通过 `queue.Queue` 投递动作,由 pywebview 主线程的 `ui_loop` 调度执行所有窗口方法(show/hide/confirm/destroy),规避跨线程 GUI 风险(macOS 敏感)。`app.py` 仅微调入口并新增 `is_busy()`。
+**Architecture:** 外壳与内核分离。新增 `desktop.py` 作打包唯一入口:用 `werkzeug.serving.make_server` 在后台 daemon 线程跑 Flask(自动分配端口、支持优雅 shutdown),pywebview 在主线程 `webview.start()` 跑 GUI 事件循环,pystray 在独立 daemon 线程提供托盘。**托盘回调线程不直接操作窗口**:通过 `queue.Queue` 投递动作;`ui_loop` 作为**唯一后台 UI 调度线程**(经 `webview.start(ui_loop)` 启动,注意 pywebview 会把该 func 放到独立线程运行,而非主线程)串行调用 pywebview Window API(show/hide/confirm/destroy),避免多个线程同时碰窗口对象。`app.py` 仅微调入口并新增 `is_busy()`。
 
 **Tech Stack:** Flask(现有)、werkzeug.make_server、pywebview(系统 WebView2/WebKit 内核)、pystray、PyInstaller。
 
@@ -25,7 +25,9 @@
 | `tests/test_app.py` | 加 `is_busy()` 测试(fixture 恢复状态) | 修改 |
 | `tests/test_desktop.py` | `FlaskServer` 启停/端口/未 start 安全 close 测试 | 新增 |
 
-**测试边界(诚实声明):** pywebview 窗口、pystray 托盘、`create_confirmation_dialog`、`ui_loop` 依赖真实 GUI event loop,无头环境不可自动化。故**自动化测试仅覆盖纯逻辑**(`is_busy()`、`FlaskServer` 启停与端口、未 start 安全 close);窗口/托盘/关窗隐藏/退出确认/UI 队列调度列入 Task 8 的**手动验证清单**。
+**测试边界(诚实声明):** pywebview 窗口、pystray 托盘、`create_confirmation_dialog`、`ui_loop` 依赖真实 GUI event loop,无头环境不可自动化。故**自动化测试仅覆盖纯逻辑**(`is_busy()`、`FlaskServer` 启停与端口、未 start 安全 close、shutdown 幂等);窗口/托盘/关窗隐藏/退出确认/UI 队列调度列入 Task 8 的**手动验证清单**。
+
+**线程模型(准确表述):** `webview.start()` 在主线程运行 GUI 事件循环;传给 `webview.start(ui_loop)` 的 `ui_loop` 被 pywebview 放到**独立线程**执行(非主线程)。设计目标不是"让 UI 操作在主线程",而是让 **`ui_loop` 成为唯一串行调用 Window API 的调度线程**——托盘线程只投递,不碰窗口对象,从而避免多线程并发操作同一窗口。
 
 **GUI 库懒加载约定:** `webview`、`pystray`、`PIL` **不在 desktop.py 顶层 import**,只在 GUI 函数内部 import。这样 `tests/test_desktop.py` 仅测 `FlaskServer` 时,即使环境缺 GUI 系统库也不会因 `import desktop` 失败。
 
@@ -175,6 +177,13 @@ def test_flaskserver_shutdown_without_start_is_safe():
     srv = desktop.FlaskServer(appmod.app)
     srv.shutdown()   # 关键:未 serve_forever 时 shutdown 不能死锁
 
+def test_flaskserver_shutdown_idempotent():
+    srv = desktop.FlaskServer(appmod.app)
+    srv.start()
+    assert desktop.wait_until_ready(srv.port, timeout=10) is True
+    srv.shutdown()
+    srv.shutdown()   # 重复调用必须安全无副作用(退出流程会多次触发)
+
 def test_flaskserver_serves_index():
     srv = desktop.FlaskServer(appmod.app)
     srv.start()
@@ -212,12 +221,17 @@ class FlaskServer:
         self.port = self._srv.server_port
         self._thread = threading.Thread(target=self._srv.serve_forever, daemon=True)
         self._started = False
+        self._closed = False
 
     def start(self):
         self._started = True
         self._thread.start()
 
     def shutdown(self):
+        # 幂等:退出流程可能多次触发(request_quit + finally + on_closing)
+        if self._closed:
+            return
+        self._closed = True
         # serve_forever 未运行时调 shutdown() 会阻塞;未 start 只 close socket
         if self._started:
             self._srv.shutdown()
@@ -243,7 +257,7 @@ def wait_until_ready(port, timeout=10.0):
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `venv/bin/python -m pytest tests/test_desktop.py -v`
-Expected: 4 个用例全 PASS(尤其 `shutdown_without_start` 不卡死)
+Expected: 5 个用例全 PASS(尤其 `shutdown_without_start` 不卡死、`shutdown_idempotent` 二次调用安全)
 
 - [ ] **Step 5: 提交**
 
@@ -260,7 +274,7 @@ git commit -m "feat: desktop.py FlaskServer(未start安全close) + wait_until_re
 - Modify: `desktop.py`
 
 > 本 Task 依赖真实 GUI event loop,不写自动化测试;正确性由 Task 8 手动清单验证。
-> **核心:托盘回调线程只 `post_ui(...)` 投递,绝不直接碰 `_window`。** 所有窗口方法(show/hide/confirm/destroy)由主线程 `ui_loop` 执行。GUI 库全部函数内懒加载。
+> **核心:托盘回调线程只 `post_ui(...)` 投递,绝不直接碰 `_window`。** 所有窗口方法(show/hide/confirm/destroy)由**唯一的调度线程 `ui_loop`** 串行执行(`ui_loop` 经 `webview.start(ui_loop)` 在独立线程运行,不是主线程)。GUI 库全部函数内懒加载。
 
 - [ ] **Step 1: 加 UI 队列、窗口、托盘、状态机与 main()**
 
@@ -309,7 +323,8 @@ def request_quit():
 
 
 def ui_loop():
-    """pywebview 主线程循环:从队列取动作并在主线程执行窗口方法。"""
+    """唯一的 UI 调度线程(pywebview 经 webview.start(ui_loop) 放到独立线程运行,
+    非主线程):从队列取动作,串行调用 Window API。托盘线程只投递,不碰窗口。"""
     while not _quitting:
         try:
             action, args = _ui_queue.get(timeout=0.1)
@@ -392,7 +407,8 @@ def main():
         _window.events.closing += on_closing
         if _use_tray():
             threading.Thread(target=_run_tray, daemon=True).start()
-        webview.start(ui_loop)     # 主线程跑 ui_loop,阻塞至 destroy
+        # 主线程跑 GUI 事件循环并阻塞至 destroy;ui_loop 被放到独立线程运行
+        webview.start(ui_loop)
     except Exception as e:          # 常见:Win 缺 WebView2 / GUI 初始化失败
         _error_exit(f"窗口创建失败,可能缺少 WebView2 Runtime,请运行随包安装器。\n{e}")
     finally:
