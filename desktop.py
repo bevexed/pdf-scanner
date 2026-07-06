@@ -100,23 +100,17 @@ def ui_loop():
 
 
 def on_closing():
-    """窗口 ✕(pywebview 在主线程触发):导入中确认才隐藏;否则隐藏到托盘。"""
+    """窗口 ✕(pywebview 在主线程触发):✕ = 隐藏窗口,不退出程序。
+    - Windows:隐藏到右下角托盘,托盘唤回/退出。
+    - macOS:隐藏窗口,从 Dock 图标点击唤回;退出用系统方式(Dock 右键→退出 / Cmd+Q)。
+    _quitting 为真时(托盘退出等主动退出路径)才放行真正关闭。"""
     global _quitting
     if _quitting:
         return True
-    if not _use_tray():
-        # 无托盘(macOS 首版):✕ = 退出,导入中确认
-        if appmod.is_busy():
-            ok = _window.create_confirmation_dialog("正在导入", "正在导入,确定退出?中断后需重新导入")
-            if not ok:
-                return False
-        _quitting = True
-        if _server is not None:
-            _server.shutdown()
-        return True                # 放行关闭 → webview.start 返回
-    # 有托盘:✕ = 隐藏
+    # macOS 无托盘时,隐藏后靠 Dock 唤回;提示语按平台措辞
+    hint_target = "托盘" if _use_tray() else "后台"
     if appmod.is_busy():
-        ok = _window.create_confirmation_dialog("正在导入", "正在导入,确定隐藏到托盘?")
+        ok = _window.create_confirmation_dialog("正在导入", f"正在导入,确定隐藏到{hint_target}?")
         if not ok:
             return False           # 取消:窗口保持可见
     _window.hide()
@@ -173,6 +167,28 @@ def _use_tray():
     return sys.platform != "darwin"
 
 
+def _install_dock_reopen():
+    """macOS:点击 Dock 图标时唤回被隐藏的窗口。
+    给 pywebview 的 AppDelegate 类补一个 applicationShouldHandleReopen 方法
+    (它自身未实现该钩子)。失败则静默降级(仍可用 Cmd+Q / Dock 右键退出,
+    仅无法从 Dock 唤回窗口)。"""
+    try:
+        import objc
+        from webview.platforms.cocoa import BrowserView
+
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, app, flag):
+            # 点 Dock 图标:投递到 UI 调度线程唤回窗口,不跨线程直接操作窗口
+            post_ui("show")
+            return True
+
+        objc.classAddMethods(
+            BrowserView.AppDelegate,
+            [applicationShouldHandleReopen_hasVisibleWindows_],
+        )
+    except Exception as e:
+        sys.stderr.write(f"Dock 唤回未启用(不影响使用,可用 Cmd+Q/Dock 右键退出):{e}\n")
+
+
 def main():
     global _window, _server
     import webview
@@ -191,6 +207,9 @@ def main():
         _window.events.closing += on_closing
         if _use_tray():
             threading.Thread(target=_run_tray, daemon=True).start()
+        elif sys.platform == "darwin":
+            # macOS 无托盘:装 Dock 图标唤回(✕ 隐藏后从 Dock 点回)
+            _install_dock_reopen()
         # 主线程跑 GUI 事件循环并阻塞至 destroy;ui_loop 被放到独立线程运行
         webview.start(ui_loop)
     except Exception as e:          # 常见:Win 缺 WebView2 / GUI 初始化失败
